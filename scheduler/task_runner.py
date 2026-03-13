@@ -52,9 +52,10 @@ async def _run_post_task(pool, conn, task_id: int) -> None:
 
     for db_group_id in task["group_ids"]:
         group = get_group(conn, db_group_id)
-        if not group or not group.get("telegram_id"):
+        if not group:
             continue
-        tg_id = group["telegram_id"]
+        # Use numeric telegram_id if resolved, else fall back to @username/invite
+        tg_id = group.get("telegram_id") or group["identifier"]
         delay = random.randint(5, max(5, task["delay_seconds"]))
         await asyncio.sleep(delay)
         try:

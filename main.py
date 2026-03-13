@@ -33,6 +33,7 @@ async def main():
 
     # Wire pool reference into handlers
     accounts._pool_ref = pool
+    groups._pool_ref = pool
     tasks._pool_ref = pool
     tasks._conn_ref = conn
 

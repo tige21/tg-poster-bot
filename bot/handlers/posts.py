@@ -4,7 +4,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, PhotoSize
-from db.database import get_conn
+from db.database import db_conn
 from db.models import create_post, list_posts, get_post, delete_post
 from config import MEDIA_DIR
 
@@ -18,8 +18,8 @@ class AddPost(StatesGroup):
 
 @router.message(Command("posts"))
 async def cmd_posts(message: Message):
-    conn = get_conn()
-    posts = list_posts(conn)
+    with db_conn() as conn:
+        posts = list_posts(conn)
     if not posts:
         await message.answer("Постов нет. /add_post — создать.")
         return
@@ -55,8 +55,8 @@ async def process_content_photo(message: Message, state: FSMContext):
     file_path = os.path.join(MEDIA_DIR, f"{photo.file_id}.jpg")
     await message.bot.download(photo, destination=file_path)
     caption = message.caption or ""
-    conn = get_conn()
-    pid = create_post(conn, title=data["title"], text=caption, image_path=file_path)
+    with db_conn() as conn:
+        pid = create_post(conn, title=data["title"], text=caption, image_path=file_path)
     await message.answer(f"✅ Пост #{pid} «{data['title']}» сохранён с фото.")
 
 
@@ -65,8 +65,8 @@ async def process_content_text(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
     text = "" if message.text.strip() == "/skip" else message.text.strip()
-    conn = get_conn()
-    pid = create_post(conn, title=data["title"], text=text)
+    with db_conn() as conn:
+        pid = create_post(conn, title=data["title"], text=text)
     await message.answer(f"✅ Пост #{pid} «{data['title']}» сохранён.")
 
 
@@ -81,9 +81,9 @@ async def cmd_del_post(message: Message):
     except ValueError:
         await message.answer("❌ ID должен быть числом.")
         return
-    conn = get_conn()
-    if not get_post(conn, pid):
-        await message.answer(f"❌ Пост #{pid} не найден.")
-        return
-    delete_post(conn, pid)
+    with db_conn() as conn:
+        if not get_post(conn, pid):
+            await message.answer(f"❌ Пост #{pid} не найден.")
+            return
+        delete_post(conn, pid)
     await message.answer(f"✅ Пост #{pid} удалён.")

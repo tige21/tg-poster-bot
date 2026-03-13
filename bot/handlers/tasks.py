@@ -3,7 +3,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
-from db.database import get_conn
+from db.database import db_conn
 from db.models import (
     create_task, list_tasks, get_task, update_task_active,
     list_accounts, list_posts, list_groups,
@@ -26,8 +26,8 @@ class AddTask(StatesGroup):
 
 @router.message(Command("tasks"))
 async def cmd_tasks(message: Message):
-    conn = get_conn()
-    tasks = list_tasks(conn)
+    with db_conn() as conn:
+        tasks = list_tasks(conn)
     if not tasks:
         await message.answer("Задач нет. /add_task — создать.")
         return
@@ -44,8 +44,8 @@ async def cmd_tasks(message: Message):
 
 @router.message(Command("add_task"))
 async def cmd_add_task(message: Message, state: FSMContext):
-    conn = get_conn()
-    accounts = list_accounts(conn)
+    with db_conn() as conn:
+        accounts = list_accounts(conn)
     if not accounts:
         await message.answer("❌ Сначала добавь аккаунт: /add_account")
         return
@@ -63,8 +63,8 @@ async def process_account(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введи числовой ID.")
         return
-    conn = get_conn()
-    posts = list_posts(conn)
+    with db_conn() as conn:
+        posts = list_posts(conn)
     if not posts:
         await message.answer("❌ Сначала создай пост: /add_post")
         await state.clear()
@@ -84,8 +84,8 @@ async def process_post(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Введи числовой ID.")
         return
-    conn = get_conn()
-    groups = list_groups(conn)
+    with db_conn() as conn:
+        groups = list_groups(conn)
     if not groups:
         await message.answer("❌ Сначала добавь группы: /add_group")
         await state.clear()
@@ -145,17 +145,17 @@ async def process_schedule(message: Message, state: FSMContext):
 
     data = await state.get_data()
     await state.clear()
-    conn = get_conn()
-    task_id = create_task(
-        conn,
-        account_id=data["account_id"],
-        post_id=data["post_id"],
-        group_ids=data["group_ids"],
-        task_type=data["task_type"],
-        schedule_type=schedule_type,
-        schedule_value=schedule_value,
-    )
-    task = get_task(conn, task_id)
+    with db_conn() as conn:
+        task_id = create_task(
+            conn,
+            account_id=data["account_id"],
+            post_id=data["post_id"],
+            group_ids=data["group_ids"],
+            task_type=data["task_type"],
+            schedule_type=schedule_type,
+            schedule_value=schedule_value,
+        )
+        task = get_task(conn, task_id)
 
     # Register in scheduler / monitor
     if data["task_type"] == "post" and _pool_ref and _conn_ref:
@@ -183,22 +183,23 @@ async def cmd_toggle_task(message: Message):
     except ValueError:
         await message.answer("❌ ID должен быть числом.")
         return
-    conn = get_conn()
-    task = get_task(conn, task_id)
-    if not task:
-        await message.answer(f"❌ Задача #{task_id} не найдена.")
-        return
-    new_active = not bool(task["is_active"])
-    update_task_active(conn, task_id, new_active)
+    with db_conn() as conn:
+        task = get_task(conn, task_id)
+        if not task:
+            await message.answer(f"❌ Задача #{task_id} не найдена.")
+            return
+        new_active = not bool(task["is_active"])
+        update_task_active(conn, task_id, new_active)
+        updated_task = get_task(conn, task_id)
 
     if _pool_ref and _conn_ref:
         from scheduler.task_runner import register_task, unregister_task
         from core.monitor import start_monitor, stop_monitor
         if new_active:
             if task["task_type"] == "post":
-                register_task(_pool_ref, _conn_ref, get_task(conn, task_id))
+                register_task(_pool_ref, _conn_ref, updated_task)
             else:
-                start_monitor(_pool_ref, _conn_ref, get_task(conn, task_id))
+                start_monitor(_pool_ref, _conn_ref, updated_task)
         else:
             if task["task_type"] == "post":
                 unregister_task(task_id)

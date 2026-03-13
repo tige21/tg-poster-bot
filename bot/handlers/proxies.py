@@ -3,8 +3,8 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from db.database import get_conn
+from aiogram.types import Message
+from db.database import db_conn
 from db.models import create_proxy, list_proxies, get_proxy, delete_proxy, update_proxy_status
 from core.proxy_checker import check_proxy
 
@@ -17,8 +17,8 @@ class AddProxy(StatesGroup):
 
 @router.message(Command("proxies"))
 async def cmd_proxies(message: Message):
-    conn = get_conn()
-    proxies = list_proxies(conn)
+    with db_conn() as conn:
+        proxies = list_proxies(conn)
     if not proxies:
         await message.answer("Прокси не добавлены. /add_proxy — добавить.")
         return
@@ -61,10 +61,10 @@ async def process_proxy_data(message: Message, state: FSMContext):
     await message.answer("⏳ Проверяю прокси...")
     result = await check_proxy(type=proxy_type, host=host, port=port,
                                username=username, password=password)
-    conn = get_conn()
-    pid = create_proxy(conn, type=proxy_type, host=host, port=port,
-                       username=username, password=password)
-    update_proxy_status(conn, pid, result["status"], ping_ms=result.get("ping_ms"))
+    with db_conn() as conn:
+        pid = create_proxy(conn, type=proxy_type, host=host, port=port,
+                           username=username, password=password)
+        update_proxy_status(conn, pid, result["status"], ping_ms=result.get("ping_ms"))
 
     icon = {"ok": "✅", "slow": "🟡", "fail": "❌"}.get(result["status"], "⬜")
     ping = f", {result['ping_ms']}ms" if result.get("ping_ms") else ""
@@ -85,9 +85,9 @@ async def cmd_del_proxy(message: Message):
     except ValueError:
         await message.answer("❌ ID должен быть числом.")
         return
-    conn = get_conn()
-    if not get_proxy(conn, pid):
-        await message.answer(f"❌ Прокси #{pid} не найден.")
-        return
-    delete_proxy(conn, pid)
+    with db_conn() as conn:
+        if not get_proxy(conn, pid):
+            await message.answer(f"❌ Прокси #{pid} не найден.")
+            return
+        delete_proxy(conn, pid)
     await message.answer(f"✅ Прокси #{pid} удалён.")

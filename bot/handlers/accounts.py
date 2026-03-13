@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from db.database import get_conn
+from db.database import db_conn
 from db.models import (
     create_account, list_accounts, get_account,
     update_account_status, update_account_session, list_proxies,
@@ -17,6 +17,8 @@ router = Router()
 
 # Temporary storage for in-progress auth clients
 _pending_clients: dict[int, TelegramClient] = {}  # chat_id → client
+# Set by main.py after pool is created
+_pool_ref = None
 
 
 class AddAccount(StatesGroup):
@@ -27,8 +29,8 @@ class AddAccount(StatesGroup):
 
 @router.message(Command("accounts"))
 async def cmd_accounts(message: Message):
-    conn = get_conn()
-    accounts = list_accounts(conn)
+    with db_conn() as conn:
+        accounts = list_accounts(conn)
     if not accounts:
         await message.answer("Аккаунты не добавлены. /add_account — добавить.")
         return
@@ -122,25 +124,19 @@ async def process_password(message: Message, state: FSMContext):
 async def _save_account(message: Message, state: FSMContext,
                         client: TelegramClient, phone: str):
     session_string = client.session.save()
-    conn = get_conn()
-    acc_id = create_account(conn, phone=phone, api_id=API_ID,
-                            api_hash=API_HASH, session_string=session_string)
+    with db_conn() as conn:
+        acc_id = create_account(conn, phone=phone, api_id=API_ID,
+                                api_hash=API_HASH, session_string=session_string)
+        has_proxies = bool(list_proxies(conn))
+
     _pending_clients.pop(message.chat.id, None)
     await state.clear()
 
-    proxies = list_proxies(conn)
-    proxy_hint = " Привязать прокси: /set_proxy" if proxies else ""
-    await message.answer(
-        f"✅ Аккаунт #{acc_id} ({phone}) добавлен!{proxy_hint}"
-    )
-    # Add to running pool
-    from bot.handlers.accounts import _pool_ref
+    proxy_hint = " Привязать прокси: /set_proxy" if has_proxies else ""
+    await message.answer(f"✅ Аккаунт #{acc_id} ({phone}) добавлен!{proxy_hint}")
+
     if _pool_ref:
         await _pool_ref.add(acc_id, session_string, API_ID, API_HASH)
-
-
-# Set by main.py after pool is created
-_pool_ref = None
 
 
 @router.message(Command("set_proxy"))
@@ -155,7 +151,7 @@ async def cmd_set_proxy(message: Message):
     except ValueError:
         await message.answer("❌ ID должны быть числами.")
         return
-    conn = get_conn()
-    conn.execute("UPDATE accounts SET proxy_id=? WHERE id=?", (proxy_id, acc_id))
-    conn.commit()
+    with db_conn() as conn:
+        conn.execute("UPDATE accounts SET proxy_id=? WHERE id=?", (proxy_id, acc_id))
+        conn.commit()
     await message.answer(f"✅ Прокси #{proxy_id} привязан к аккаунту #{acc_id}.")

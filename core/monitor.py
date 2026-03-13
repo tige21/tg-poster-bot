@@ -26,14 +26,27 @@ async def _run_monitor(pool, conn, task: dict) -> None:
         return
 
     group_ids_db = task["group_ids"]  # list of DB group IDs
-    # Resolve to Telegram IDs
+    # Resolve @username/invite → numeric telegram_id, cache in DB
     tg_ids = {}
     for gid in group_ids_db:
         g = get_group(conn, gid)
-        if g and g.get("telegram_id"):
-            tg_ids[g["telegram_id"]] = gid
+        if not g:
+            continue
+        tg_id = g.get("telegram_id")
+        if not tg_id:
+            try:
+                entity = await client.get_entity(g["identifier"])
+                tg_id = entity.id
+                conn.execute("UPDATE groups SET telegram_id=? WHERE id=?", (tg_id, gid))
+                conn.commit()
+                logger.info(f"Resolved {g['identifier']} → {tg_id}")
+            except Exception as e:
+                logger.warning(f"Can't resolve group {g['identifier']}: {e}")
+                continue
+        tg_ids[tg_id] = gid
 
     if not tg_ids:
+        logger.warning(f"Monitor task {task['id']}: no resolvable groups, aborting")
         return
 
     @client.on(events.NewMessage(chats=list(tg_ids.keys())))
@@ -64,9 +77,9 @@ async def _run_monitor(pool, conn, task: dict) -> None:
             log_send(conn, task_id=task["id"], account_id=task["account_id"],
                      group_id=db_group_id, status="error", error_text=str(e))
 
-    # Keep running until cancelled
+    # Wait until cancelled — don't call run_until_disconnected() as client is shared
     try:
-        await client.run_until_disconnected()
+        await asyncio.Event().wait()
     except asyncio.CancelledError:
         client.remove_event_handler(handler)
         raise

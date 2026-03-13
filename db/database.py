@@ -12,6 +12,16 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+class db_conn:
+    """Context manager: opens a connection, closes on exit."""
+    def __enter__(self) -> sqlite3.Connection:
+        self._conn = get_conn()
+        return self._conn
+
+    def __exit__(self, *_):
+        self._conn.close()
+
+
 def init_db(conn: sqlite3.Connection = None) -> None:
     """Create all tables. If conn is provided, uses it (won't close). Otherwise creates and closes."""
     close_after = conn is None
