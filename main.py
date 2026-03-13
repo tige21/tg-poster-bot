@@ -2,10 +2,12 @@ import asyncio
 import logging
 import os
 from aiogram import Bot, Dispatcher
+from aiogram.filters import Filter
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
 
 from config import BOT_TOKEN, ADMIN_CHAT_ID, MEDIA_DIR
-from db.database import init_db, get_conn
+from db.database import init_db, db_conn
 from core.account_pool import AccountPool
 from core.monitor import start_all_monitors
 from scheduler.task_runner import register_all_tasks, scheduler as _scheduler
@@ -19,41 +21,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class AdminOnly(Filter):
+    """Aiogram filter: only ADMIN_CHAT_ID passes."""
+    async def __call__(self, message: Message) -> bool:
+        return message.chat.id == ADMIN_CHAT_ID
+
+
 async def main():
     # Dirs
     os.makedirs(MEDIA_DIR, exist_ok=True)
 
-    # DB
+    # DB init
     init_db()
-    conn = get_conn()
 
-    # Telethon pool
+    # Telethon pool — uses its own short-lived connection
     pool = AccountPool()
-    await pool.start_all(conn)
+    with db_conn() as conn:
+        await pool.start_all(conn)
 
     # Wire pool reference into handlers
     accounts._pool_ref = pool
     groups._pool_ref = pool
     tasks._pool_ref = pool
-    tasks._conn_ref = conn
 
-    # Scheduler
+
+    # Scheduler — jobs open their own DB connections per execution
     _scheduler.start()
-    register_all_tasks(pool, conn)
-
-    # Auto-comment monitors
-    start_all_monitors(pool, conn)
+    with db_conn() as conn:
+        register_all_tasks(pool, conn)
+        start_all_monitors(pool, conn)
 
     # Aiogram
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
 
-    dp.include_router(main_router)
-    dp.include_router(proxies.router)
-    dp.include_router(accounts.router)
-    dp.include_router(groups.router)
-    dp.include_router(posts.router)
-    dp.include_router(tasks.router)
+    # Apply admin filter to all routers globally
+    for router in [main_router, proxies.router, accounts.router,
+                   groups.router, posts.router, tasks.router]:
+        router.message.filter(AdminOnly())
+        dp.include_router(router)
 
     logger.info(f"Bot started. Admin: {ADMIN_CHAT_ID}")
     try:

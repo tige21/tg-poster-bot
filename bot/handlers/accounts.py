@@ -6,10 +6,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.errors import SessionPasswordNeededError
 from db.database import db_conn
 from db.models import (
     create_account, list_accounts, get_account,
-    update_account_status, update_account_session, list_proxies,
+    update_account_status, update_account_session, list_proxies, get_proxy,
 )
 from config import API_ID, API_HASH
 
@@ -87,11 +88,11 @@ async def process_code(message: Message, state: FSMContext):
     try:
         await client.sign_in(phone=phone, code=code,
                              phone_code_hash=data["phone_code_hash"])
+    except SessionPasswordNeededError:
+        await state.set_state(AddAccount.waiting_password)
+        await message.answer("🔐 Требуется пароль двухфакторной аутентификации:")
+        return
     except Exception as e:
-        if "password" in str(e).lower() or "2fa" in str(e).lower():
-            await state.set_state(AddAccount.waiting_password)
-            await message.answer("🔐 Требуется пароль двухфакторной аутентификации:")
-            return
         await client.disconnect()
         _pending_clients.pop(message.chat.id, None)
         await message.answer(f"❌ Ошибка входа: {e}")
@@ -127,16 +128,17 @@ async def _save_account(message: Message, state: FSMContext,
     with db_conn() as conn:
         acc_id = create_account(conn, phone=phone, api_id=API_ID,
                                 api_hash=API_HASH, session_string=session_string)
-        has_proxies = bool(list_proxies(conn))
+        proxies = list_proxies(conn)
+        proxy = None  # new account has no proxy yet
 
     _pending_clients.pop(message.chat.id, None)
     await state.clear()
 
-    proxy_hint = " Привязать прокси: /set_proxy" if has_proxies else ""
+    proxy_hint = " Привязать прокси: /set_proxy" if proxies else ""
     await message.answer(f"✅ Аккаунт #{acc_id} ({phone}) добавлен!{proxy_hint}")
 
     if _pool_ref:
-        await _pool_ref.add(acc_id, session_string, API_ID, API_HASH)
+        await _pool_ref.add(acc_id, session_string, API_ID, API_HASH, proxy=proxy)
 
 
 @router.message(Command("set_proxy"))
@@ -154,4 +156,14 @@ async def cmd_set_proxy(message: Message):
     with db_conn() as conn:
         conn.execute("UPDATE accounts SET proxy_id=? WHERE id=?", (proxy_id, acc_id))
         conn.commit()
-    await message.answer(f"✅ Прокси #{proxy_id} привязан к аккаунту #{acc_id}.")
+        acc = get_account(conn, acc_id)
+        proxy = get_proxy(conn, proxy_id)
+    # Reconnect account with new proxy in the live pool
+    if _pool_ref and acc and acc.get("session_string"):
+        await _pool_ref.remove(acc_id)
+        await _pool_ref.add(acc_id, acc["session_string"], acc["api_id"], acc["api_hash"],
+                            proxy=proxy)
+        await message.answer(f"✅ Прокси #{proxy_id} привязан к аккаунту #{acc_id} и применён.")
+    else:
+        await message.answer(f"✅ Прокси #{proxy_id} привязан к аккаунту #{acc_id}. "
+                             f"Вступит в силу при следующем перезапуске.")

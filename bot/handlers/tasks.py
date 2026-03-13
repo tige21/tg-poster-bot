@@ -13,7 +13,6 @@ router = Router()
 
 # Set by main.py
 _pool_ref = None
-_conn_ref = None
 
 
 class AddTask(StatesGroup):
@@ -143,6 +142,19 @@ async def process_schedule(message: Message, state: FSMContext):
         await message.answer("❌ Тип: daily, interval или once")
         return
 
+    # Validate schedule_value before persisting
+    from scheduler.task_runner import build_trigger
+    try:
+        build_trigger(schedule_type, schedule_value)
+    except Exception:
+        await message.answer(
+            "❌ Неверный формат значения расписания.\n"
+            "Примеры: <code>daily 14:30</code> | <code>interval 30</code> | "
+            "<code>once 2026-06-01T10:00</code>",
+            parse_mode="HTML"
+        )
+        return
+
     data = await state.get_data()
     await state.clear()
     with db_conn() as conn:
@@ -158,12 +170,13 @@ async def process_schedule(message: Message, state: FSMContext):
         task = get_task(conn, task_id)
 
     # Register in scheduler / monitor
-    if data["task_type"] == "post" and _pool_ref and _conn_ref:
-        from scheduler.task_runner import register_task
-        register_task(_pool_ref, _conn_ref, task)
-    elif data["task_type"] == "autocomment" and _pool_ref and _conn_ref:
-        from core.monitor import start_monitor
-        start_monitor(_pool_ref, _conn_ref, task)
+    if _pool_ref:
+        if data["task_type"] == "post":
+            from scheduler.task_runner import register_task
+            register_task(_pool_ref, task)
+        else:
+            from core.monitor import start_monitor
+            start_monitor(_pool_ref, task)
 
     await message.answer(
         f"✅ Задача #{task_id} создана:\n"
@@ -192,14 +205,14 @@ async def cmd_toggle_task(message: Message):
         update_task_active(conn, task_id, new_active)
         updated_task = get_task(conn, task_id)
 
-    if _pool_ref and _conn_ref:
+    if _pool_ref:
         from scheduler.task_runner import register_task, unregister_task
         from core.monitor import start_monitor, stop_monitor
         if new_active:
             if task["task_type"] == "post":
-                register_task(_pool_ref, _conn_ref, updated_task)
+                register_task(_pool_ref, updated_task)
             else:
-                start_monitor(_pool_ref, _conn_ref, updated_task)
+                start_monitor(_pool_ref, updated_task)
         else:
             if task["task_type"] == "post":
                 unregister_task(task_id)

@@ -83,8 +83,11 @@ def create_group(conn, *, identifier, title=None, telegram_id=None) -> int:
     conn.commit()
     if cur.lastrowid:
         return cur.lastrowid
-    return conn.execute("SELECT id FROM groups WHERE identifier=?",
-                        (identifier,)).fetchone()[0]
+    row = conn.execute("SELECT id FROM groups WHERE identifier=?",
+                       (identifier,)).fetchone()
+    if row is None:
+        raise RuntimeError(f"create_group: could not find group after INSERT OR IGNORE for {identifier!r}")
+    return row[0]
 
 
 def get_group(conn, group_id: int) -> dict | None:

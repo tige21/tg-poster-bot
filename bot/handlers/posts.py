@@ -64,7 +64,7 @@ async def process_content_photo(message: Message, state: FSMContext):
 async def process_content_text(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
-    text = "" if message.text.strip() == "/skip" else message.text.strip()
+    text = "" if message.text.strip().split("@")[0].lower() == "/skip" else message.text.strip()
     with db_conn() as conn:
         pid = create_post(conn, title=data["title"], text=text)
     await message.answer(f"✅ Пост #{pid} «{data['title']}» сохранён.")
