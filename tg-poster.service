@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram Poster Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/tg-poster-bot
+ExecStart=/root/tg-poster-bot/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+EnvironmentFile=/root/tg-poster-bot/.env
+
+[Install]
+WantedBy=multi-user.target
