@@ -11,7 +11,7 @@ from core.poster import send_post
 from db.database import db_conn
 from db.models import (
     list_tasks, get_task, get_post, get_group,
-    log_send, update_task_last_run,
+    log_send, update_task_last_run, update_task_active,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,12 +67,13 @@ async def _run_post_task(pool, task_id: int) -> None:
                 log_send(conn, task_id=task_id, account_id=task["account_id"],
                          group_id=db_group_id, status="ok")
         except FloodWaitError as e:
-            logger.warning(f"FloodWait {e.seconds}s on task {task_id}")
+            # Scenario 11 fix: skip remaining groups, don't block event loop
+            logger.warning(f"FloodWait {e.seconds}s on account {task['account_id']}, stopping task {task_id} early")
             with db_conn() as conn:
                 log_send(conn, task_id=task_id, account_id=task["account_id"],
                          group_id=db_group_id, status="flood_wait",
                          error_text=str(e.seconds))
-            await asyncio.sleep(e.seconds)
+            break  # stop posting to other groups; scheduler will retry next interval
         except Exception as e:
             logger.error(f"Error posting task {task_id} → group {db_group_id}: {e}")
             with db_conn() as conn:
@@ -81,6 +82,11 @@ async def _run_post_task(pool, task_id: int) -> None:
 
     with db_conn() as conn:
         update_task_last_run(conn, task_id)
+        # Scenarios 2/8 fix: auto-deactivate one-shot tasks after they fire
+        task_fresh = get_task(conn, task_id)
+        if task_fresh and task_fresh["schedule_type"] == "once":
+            update_task_active(conn, task_id, False)
+            logger.info(f"Task {task_id} (once) auto-deactivated after execution")
 
 
 def register_task(pool, task: dict) -> None:

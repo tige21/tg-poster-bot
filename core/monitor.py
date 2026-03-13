@@ -22,8 +22,9 @@ async def _run_monitor(pool, task: dict) -> None:
         return
 
     with db_conn() as conn:
-        post = get_post(conn, task["post_id"])
-        if not post:
+        # Verify post exists at monitor start
+        if not get_post(conn, task["post_id"]):
+            logger.warning(f"Monitor task {task['id']}: post {task['post_id']} not found, aborting")
             return
 
         # Resolve @username/invite → numeric telegram_id, cache in DB
@@ -57,12 +58,19 @@ async def _run_monitor(pool, task: dict) -> None:
         if db_group_id is None:
             return
 
+        # Scenario 6 fix: re-fetch post so deleted post stops being used
+        with db_conn() as conn:
+            current_post = get_post(conn, task["post_id"])
+        if not current_post:
+            logger.info(f"Post {task['post_id']} deleted, skipping comment for task {task['id']}")
+            return
+
         delay = random.randint(5, max(6, task["delay_seconds"]))
         await asyncio.sleep(delay)
 
         try:
             from telethon.errors import FloodWaitError
-            await send_comment(client, event.message, post)
+            await send_comment(client, event.message, current_post)
             with db_conn() as conn:
                 log_send(conn, task_id=task["id"], account_id=task["account_id"],
                          group_id=db_group_id, status="ok")

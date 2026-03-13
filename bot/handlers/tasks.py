@@ -6,7 +6,7 @@ from aiogram.types import Message
 from db.database import db_conn
 from db.models import (
     create_task, list_tasks, get_task, update_task_active,
-    list_accounts, list_posts, list_groups,
+    list_accounts, get_account, list_posts, list_groups,
 )
 
 router = Router()
@@ -63,6 +63,10 @@ async def process_account(message: Message, state: FSMContext):
         await message.answer("❌ Введи числовой ID.")
         return
     with db_conn() as conn:
+        # Scenario 4 fix: validate account exists before proceeding
+        if not get_account(conn, acc_id):
+            await message.answer(f"❌ Аккаунт #{acc_id} не найден. Введи ID из списка выше.")
+            return
         posts = list_posts(conn)
     if not posts:
         await message.answer("❌ Сначала создай пост: /add_post")
@@ -144,6 +148,7 @@ async def process_schedule(message: Message, state: FSMContext):
 
     # Validate schedule_value before persisting
     from scheduler.task_runner import build_trigger
+    from datetime import datetime, timezone
     try:
         build_trigger(schedule_type, schedule_value)
     except Exception:
@@ -154,20 +159,50 @@ async def process_schedule(message: Message, state: FSMContext):
             parse_mode="HTML"
         )
         return
+    # Scenarios 2/8 fix: reject past datetimes for "once" tasks
+    if schedule_type == "once":
+        run_at = datetime.fromisoformat(schedule_value)
+        if run_at.tzinfo is None:
+            run_at = run_at.replace(tzinfo=timezone.utc)
+        if run_at <= datetime.now(timezone.utc):
+            await message.answer("❌ Время для once-задачи должно быть в будущем.")
+            return
 
     data = await state.get_data()
     await state.clear()
-    with db_conn() as conn:
-        task_id = create_task(
-            conn,
-            account_id=data["account_id"],
-            post_id=data["post_id"],
-            group_ids=data["group_ids"],
-            task_type=data["task_type"],
-            schedule_type=schedule_type,
-            schedule_value=schedule_value,
-        )
-        task = get_task(conn, task_id)
+
+    # Scenario 7 fix: warn if autocomment task already exists for same account+groups
+    if data["task_type"] == "autocomment":
+        with db_conn() as conn:
+            existing = [
+                t for t in list_tasks(conn, active_only=True)
+                if t["task_type"] == "autocomment"
+                and t["account_id"] == data["account_id"]
+                and set(t["group_ids"]) & set(data["group_ids"])
+            ]
+        if existing:
+            overlap = ", ".join(f"#{t['id']}" for t in existing)
+            await message.answer(
+                f"⚠️ Уже есть активные autocomment-задачи ({overlap}) на этом аккаунте "
+                f"с пересекающимися группами. Два хендлера на одну группу приведут к двойным комментариям."
+            )
+
+    import sqlite3
+    try:
+        with db_conn() as conn:
+            task_id = create_task(
+                conn,
+                account_id=data["account_id"],
+                post_id=data["post_id"],
+                group_ids=data["group_ids"],
+                task_type=data["task_type"],
+                schedule_type=schedule_type,
+                schedule_value=schedule_value,
+            )
+            task = get_task(conn, task_id)
+    except sqlite3.IntegrityError as e:
+        await message.answer(f"❌ Ошибка создания задачи: неверный аккаунт или пост (FK). {e}")
+        return
 
     # Register in scheduler / monitor
     if _pool_ref:

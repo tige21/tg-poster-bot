@@ -36,14 +36,24 @@ async def cmd_add_post(message: Message, state: FSMContext):
     await message.answer("Введи название поста (для поиска в меню):")
 
 
-@router.message(AddPost.waiting_title)
+# Scenario 10 fix: only accept text messages as title
+@router.message(AddPost.waiting_title, F.text)
 async def process_title(message: Message, state: FSMContext):
-    await state.update_data(title=message.text.strip())
+    title = message.text.strip()
+    if not title:
+        await message.answer("❌ Название не может быть пустым.")
+        return
+    await state.update_data(title=title)
     await state.set_state(AddPost.waiting_content)
     await message.answer(
         "Отправь текст поста (или фото с подписью).\n"
         "Или /skip чтобы оставить без текста."
     )
+
+
+@router.message(AddPost.waiting_title)
+async def process_title_invalid(message: Message):
+    await message.answer("❌ Нужно текстовое название. Введи название поста:")
 
 
 @router.message(AddPost.waiting_content, F.photo)
@@ -60,7 +70,8 @@ async def process_content_photo(message: Message, state: FSMContext):
     await message.answer(f"✅ Пост #{pid} «{data['title']}» сохранён с фото.")
 
 
-@router.message(AddPost.waiting_content)
+# Scenario 3 fix: only accept text (not voice/sticker/etc)
+@router.message(AddPost.waiting_content, F.text)
 async def process_content_text(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
@@ -68,6 +79,11 @@ async def process_content_text(message: Message, state: FSMContext):
     with db_conn() as conn:
         pid = create_post(conn, title=data["title"], text=text)
     await message.answer(f"✅ Пост #{pid} «{data['title']}» сохранён.")
+
+
+@router.message(AddPost.waiting_content)
+async def process_content_invalid(message: Message):
+    await message.answer("❌ Отправь текст или фото. Голосовые, стикеры и другие типы не поддерживаются.")
 
 
 @router.message(Command("del_post"))
