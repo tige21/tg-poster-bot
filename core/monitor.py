@@ -2,6 +2,7 @@ import asyncio
 import logging
 import random
 from telethon import events
+from telethon.utils import get_peer_id
 from db.database import db_conn
 from db.models import (
     list_tasks, get_post, get_group,
@@ -34,10 +35,14 @@ async def _run_monitor(pool, task: dict) -> None:
             if not g:
                 continue
             tg_id = g.get("telegram_id")
-            if not tg_id:
+            # Re-resolve if not set or stored as raw positive entity ID (old format).
+            # Signed peer IDs for groups/channels are always negative; positive means
+            # the value was stored via entity.id instead of get_peer_id() and won't
+            # match event.chat_id, causing the handler lookup to always fail.
+            if not tg_id or tg_id > 0:
                 try:
                     entity = await client.get_entity(g["identifier"])
-                    tg_id = entity.id
+                    tg_id = get_peer_id(entity)  # signed peer ID matching event.chat_id
                     conn.execute("UPDATE groups SET telegram_id=?, title=? WHERE id=?",
                                  (tg_id, getattr(entity, "title", None) or g["identifier"], gid))
                     conn.commit()
